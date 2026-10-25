@@ -2,23 +2,21 @@
 
 from __future__ import annotations
 
+import os
+import sqlite3
 import time
+from contextlib import closing
 
 import streamlit as st
 
-from auth import (
-    authenticate,
-    create_candidate_account,
-    create_initial_admin,
-    hash_password,
-    has_configured_admin,
-    logout,
-    require_role,
-)
+import auth as auth_module
 from components.admin_dashboard import render_admin_dashboard
 from components.user_dashboard import render_user_dashboard
 from config import (
+    ADMIN_PASSWORD_HASH,
+    ADMIN_USERNAME,
     APP_TITLE,
+    DATABASE_PATH,
     LOGIN_LOCKOUT_SECONDS,
     MAX_LOGIN_ATTEMPTS,
     get_configured_users,
@@ -26,6 +24,95 @@ from config import (
 from utils.storage import init_db, record_audit_event
 
 MIN_ADMIN_PASSWORD_LENGTH = 12
+MIN_CANDIDATE_PASSWORD_LENGTH = 12
+
+authenticate = getattr(auth_module, "authenticate", None)
+create_initial_admin = getattr(auth_module, "create_initial_admin", None)
+hash_password = getattr(auth_module, "hash_password", None)
+has_configured_admin = getattr(auth_module, "has_configured_admin", None)
+logout = getattr(auth_module, "logout", None)
+require_role = getattr(auth_module, "require_role", None)
+create_candidate_account = getattr(
+    auth_module, "create_candidate_account", None
+)
+
+
+def _legacy_create_candidate_account(
+    username: str, password: str
+) -> dict[str, str]:
+    """Register candidates when running with an older auth.py module."""
+    normalized_username = username.strip() if isinstance(username, str) else ""
+    if not 3 <= len(normalized_username) <= 100:
+        raise ValueError("Username must be between 3 and 100 characters.")
+    if not isinstance(password, str) or not (
+        MIN_CANDIDATE_PASSWORD_LENGTH <= len(password) <= 1024
+    ):
+        raise ValueError(
+            f"Password must be between {MIN_CANDIDATE_PASSWORD_LENGTH} and "
+            "1024 characters."
+        )
+    if not callable(hash_password):
+        raise RuntimeError(
+            "The installed auth.py is too old to register accounts. "
+            "Deploy the current auth.py and app.py files together."
+        )
+
+    configured_accounts = get_configured_users()
+    reserved_names = set(configured_accounts)
+    if ADMIN_PASSWORD_HASH:
+        reserved_names.add(ADMIN_USERNAME)
+    if any(
+        name.casefold() == normalized_username.casefold()
+        for name in reserved_names
+    ):
+        raise ValueError("That username is already registered.")
+
+    parent = os.path.dirname(os.path.abspath(DATABASE_PATH))
+    os.makedirs(parent, exist_ok=True)
+    with closing(sqlite3.connect(DATABASE_PATH, timeout=10)) as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS local_users (
+                username TEXT PRIMARY KEY,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL CHECK (role IN ('admin', 'candidate')),
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.commit()
+        connection.execute("BEGIN IMMEDIATE")
+        existing = connection.execute(
+            "SELECT 1 FROM local_users WHERE username = ? COLLATE NOCASE",
+            (normalized_username,),
+        ).fetchone()
+        if existing:
+            connection.rollback()
+            raise ValueError("That username is already registered.")
+        try:
+            connection.execute(
+                "INSERT INTO local_users(username, password_hash, role, created_at) "
+                "VALUES (?, ?, 'candidate', datetime('now'))",
+                (normalized_username, hash_password(password)),
+            )
+            connection.commit()
+        except sqlite3.IntegrityError as exc:
+            connection.rollback()
+            raise ValueError("That username is already registered.") from exc
+    return {"username": normalized_username, "role": "candidate"}
+
+
+if not callable(create_candidate_account):
+    create_candidate_account = _legacy_create_candidate_account
+
+_REQUIRED_AUTH_FUNCTIONS = {
+    "authenticate": authenticate,
+    "create_initial_admin": create_initial_admin,
+    "hash_password": hash_password,
+    "has_configured_admin": has_configured_admin,
+    "logout": logout,
+    "require_role": require_role,
+}
 
 
 def _first_admin_screen(configured_users: dict[str, dict[str, str]]) -> None:
@@ -180,6 +267,18 @@ def _login_screen() -> None:
 
 def main() -> None:
     st.set_page_config(page_title=APP_TITLE, page_icon="📄", layout="wide")
+    missing_auth_functions = [
+        name
+        for name, function in _REQUIRED_AUTH_FUNCTIONS.items()
+        if not callable(function)
+    ]
+    if missing_auth_functions:
+        st.error(
+            "This deployment has an outdated or incomplete auth.py. Missing "
+            f"functions: {', '.join(missing_auth_functions)}. Deploy the current "
+            "auth.py and app.py from the same project version, then restart the app."
+        )
+        return
     init_db()
 
     user = st.session_state.get("user")

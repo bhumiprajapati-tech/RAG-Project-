@@ -28,6 +28,12 @@ tab on the sign-in page to register their own candidate username and password.
 New self-registered accounts receive candidate access only and are signed in
 after successful registration.
 
+When deploying updates, publish `app.py` and `auth.py` from the same project
+version and restart the Streamlit app. The app can fall back to its built-in
+candidate-registration compatibility path if an older `auth.py` is deployed,
+and it displays an actionable message rather than a redacted import traceback
+if essential authentication functions are missing.
+
 For managed deployments, you can instead provide administrator credentials in
 environment variables. Generate a PBKDF2 hash with:
 
