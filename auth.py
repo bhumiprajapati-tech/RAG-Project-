@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import secrets
+import sqlite3
+from contextlib import closing
 from typing import Any
 
 import streamlit as st
 
-from config import ADMIN_PASSWORD_HASH, ADMIN_USERNAME, get_configured_users
-from utils.storage import get_local_user, has_local_admin
+from config import (
+    ADMIN_PASSWORD_HASH,
+    ADMIN_USERNAME,
+    DATABASE_PATH,
+    get_configured_users,
+)
 
 PBKDF2_ITERATIONS = 310_000
 
@@ -27,6 +34,64 @@ def hash_password(password: str, *, iterations: int = PBKDF2_ITERATIONS) -> str:
 
 
 _DUMMY_PASSWORD_HASH = hash_password("invalid-account-password")
+
+
+def _local_user_connection() -> sqlite3.Connection:
+    parent = os.path.dirname(os.path.abspath(DATABASE_PATH))
+    os.makedirs(parent, exist_ok=True)
+    connection = sqlite3.connect(DATABASE_PATH, timeout=10)
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS local_users (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL CHECK (role IN ('admin', 'candidate')),
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.commit()
+    return connection
+
+
+def _get_local_user(username: str) -> dict[str, str] | None:
+    with closing(_local_user_connection()) as connection:
+        row = connection.execute(
+            "SELECT username, password_hash, role FROM local_users "
+            "WHERE username = ?",
+            (username,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def _has_local_admin() -> bool:
+    with closing(_local_user_connection()) as connection:
+        row = connection.execute(
+            "SELECT 1 FROM local_users WHERE role = 'admin' LIMIT 1"
+        ).fetchone()
+    return row is not None
+
+
+def create_initial_admin(username: str, password_hash: str) -> None:
+    with closing(_local_user_connection()) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        existing_admin = connection.execute(
+            "SELECT 1 FROM local_users WHERE role = 'admin' LIMIT 1"
+        ).fetchone()
+        if existing_admin:
+            connection.rollback()
+            raise ValueError("An administrator account has already been created.")
+        try:
+            connection.execute(
+                "INSERT INTO local_users(username, password_hash, role, created_at) "
+                "VALUES (?, ?, 'admin', datetime('now'))",
+                (username, password_hash),
+            )
+            connection.commit()
+        except sqlite3.IntegrityError as exc:
+            connection.rollback()
+            raise ValueError("That username is already in use.") from exc
 
 
 def _verify_password(password: str, encoded_hash: str) -> bool:
@@ -65,7 +130,7 @@ def authenticate(username: str, password: str) -> dict[str, str] | None:
         }
     account = accounts.get(normalized_username)
     if account is None:
-        account = get_local_user(normalized_username)
+        account = _get_local_user(normalized_username)
     if account is None:
         # Spend comparable work on unknown usernames to reduce timing signals.
         _verify_password(password, _DUMMY_PASSWORD_HASH)
@@ -80,7 +145,7 @@ def has_configured_admin() -> bool:
     return (
         bool(ADMIN_PASSWORD_HASH)
         or any(account["role"] == "admin" for account in accounts.values())
-        or has_local_admin()
+        or _has_local_admin()
     )
 
 

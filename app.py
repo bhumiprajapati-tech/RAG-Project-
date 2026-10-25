@@ -6,7 +6,14 @@ import time
 
 import streamlit as st
 
-from auth import authenticate, hash_password, has_configured_admin, logout, require_role
+from auth import (
+    authenticate,
+    create_initial_admin,
+    hash_password,
+    has_configured_admin,
+    logout,
+    require_role,
+)
 from components.admin_dashboard import render_admin_dashboard
 from components.user_dashboard import render_user_dashboard
 from config import (
@@ -15,7 +22,7 @@ from config import (
     MAX_LOGIN_ATTEMPTS,
     get_configured_users,
 )
-from utils.storage import create_initial_admin, init_db, record_audit_event
+from utils.storage import init_db, record_audit_event
 
 MIN_ADMIN_PASSWORD_LENGTH = 12
 
