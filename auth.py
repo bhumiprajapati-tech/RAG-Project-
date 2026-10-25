@@ -10,6 +10,7 @@ from typing import Any
 import streamlit as st
 
 from config import ADMIN_PASSWORD_HASH, ADMIN_USERNAME, get_configured_users
+from utils.storage import get_local_user, has_local_admin
 
 PBKDF2_ITERATIONS = 310_000
 
@@ -64,12 +65,23 @@ def authenticate(username: str, password: str) -> dict[str, str] | None:
         }
     account = accounts.get(normalized_username)
     if account is None:
+        account = get_local_user(normalized_username)
+    if account is None:
         # Spend comparable work on unknown usernames to reduce timing signals.
         _verify_password(password, _DUMMY_PASSWORD_HASH)
         return None
     if not _verify_password(password, account["password_hash"]):
         return None
     return {"username": normalized_username, "role": account["role"]}
+
+
+def has_configured_admin() -> bool:
+    accounts = get_configured_users()
+    return (
+        bool(ADMIN_PASSWORD_HASH)
+        or any(account["role"] == "admin" for account in accounts.values())
+        or has_local_admin()
+    )
 
 
 def require_role(user: Any, allowed_roles: set[str]) -> bool:

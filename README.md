@@ -8,8 +8,8 @@ It is a coaching aid, not a hiring decision system or a guarantee of ATS outcome
 
 1. Use Python 3.10 or newer, then create and activate a virtual environment.
 2. Install dependencies: `pip install -r requirements.txt`
-3. Configure at least one administrator account as described below.
-4. Start the app: `streamlit run app.py`
+3. Start the app: `streamlit run app.py`
+4. On first launch, create the administrator account in the app.
 
 The app creates `data/ats_analyzer.sqlite3` by default. Set
 `ATS_DATABASE_PATH` to move the SQLite database. The database stores score
@@ -19,7 +19,13 @@ deploying across multiple app instances.
 
 ## Authentication and roles
 
-There are no default passwords. Generate a PBKDF2 hash with:
+There are no default passwords. On first launch, the app displays a one-time
+form to create the initial administrator. The password must have at least 12
+characters and is stored only as a salted PBKDF2 hash in the application
+database. Once an administrator exists, public first-admin setup is disabled.
+
+For managed deployments, you can instead provide administrator credentials in
+environment variables. Generate a PBKDF2 hash with:
 
 ```powershell
 python -c "from auth import hash_password; print(hash_password('replace-with-a-long-unique-password'))"
