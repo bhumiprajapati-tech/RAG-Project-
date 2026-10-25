@@ -8,6 +8,7 @@ import streamlit as st
 
 from auth import (
     authenticate,
+    create_candidate_account,
     create_initial_admin,
     hash_password,
     has_configured_admin,
@@ -94,38 +95,87 @@ def _login_screen() -> None:
 
     locked_until = st.session_state.get("login_locked_until", 0.0)
     remaining = int(locked_until - time.time())
-    if remaining > 0:
-        st.error(f"Too many failed attempts. Try again in {remaining} seconds.")
-        return
-    if locked_until:
+    if locked_until and remaining <= 0:
         st.session_state.login_attempts = 0
         st.session_state.login_locked_until = 0.0
 
-    with st.form("login_form"):
-        username = st.text_input("Username", autocomplete="username")
-        password = st.text_input(
-            "Password", type="password", autocomplete="current-password"
+    sign_in_tab, register_tab = st.tabs(["Sign in", "Create account"])
+    with sign_in_tab:
+        if remaining > 0:
+            st.error(f"Too many failed attempts. Try again in {remaining} seconds.")
+        with st.form("login_form"):
+            username = st.text_input("Username", autocomplete="username")
+            password = st.text_input(
+                "Password", type="password", autocomplete="current-password"
+            )
+            submitted = st.form_submit_button(
+                "Sign in", use_container_width=True, disabled=remaining > 0
+            )
+
+        if submitted:
+            user = authenticate(username, password)
+            if user is None:
+                attempts = st.session_state.get("login_attempts", 0) + 1
+                st.session_state.login_attempts = attempts
+                if attempts >= MAX_LOGIN_ATTEMPTS:
+                    st.session_state.login_locked_until = (
+                        time.time() + LOGIN_LOCKOUT_SECONDS
+                    )
+                record_audit_event("login_failed", username=username.strip()[:100])
+                st.error("Invalid username or password.")
+                return
+
+            st.session_state.login_attempts = 0
+            st.session_state.login_locked_until = 0.0
+            st.session_state.user = user
+            record_audit_event("login_succeeded", username=user["username"])
+            st.rerun()
+
+    with register_tab:
+        st.caption(
+            "Create a candidate account. New registrations cannot access "
+            "administrator features."
         )
-        submitted = st.form_submit_button("Sign in", use_container_width=True)
+        with st.form("candidate_registration_form"):
+            new_username = st.text_input(
+                "New username",
+                max_chars=100,
+                key="registration_username",
+                autocomplete="username",
+            )
+            new_password = st.text_input(
+                "New password",
+                type="password",
+                key="registration_password",
+                help="Use at least 12 characters.",
+                autocomplete="new-password",
+            )
+            password_confirmation = st.text_input(
+                "Confirm password",
+                type="password",
+                key="registration_password_confirmation",
+                autocomplete="new-password",
+            )
+            register_submitted = st.form_submit_button(
+                "Create candidate account",
+                type="primary",
+                use_container_width=True,
+            )
 
-    if submitted:
-        user = authenticate(username, password)
-        if user is None:
-            attempts = st.session_state.get("login_attempts", 0) + 1
-            st.session_state.login_attempts = attempts
-            if attempts >= MAX_LOGIN_ATTEMPTS:
-                st.session_state.login_locked_until = (
-                    time.time() + LOGIN_LOCKOUT_SECONDS
-                )
-            record_audit_event("login_failed", username=username.strip()[:100])
-            st.error("Invalid username or password.")
-            return
-
-        st.session_state.login_attempts = 0
-        st.session_state.login_locked_until = 0.0
-        st.session_state.user = user
-        record_audit_event("login_succeeded", username=user["username"])
-        st.rerun()
+        if register_submitted:
+            if new_password != password_confirmation:
+                st.error("The passwords do not match.")
+                return
+            try:
+                user = create_candidate_account(new_username, new_password)
+            except ValueError as exc:
+                st.error(str(exc))
+                return
+            record_audit_event("candidate_registered", username=user["username"])
+            st.session_state.login_attempts = 0
+            st.session_state.login_locked_until = 0.0
+            st.session_state.user = user
+            st.rerun()
 
 
 def main() -> None:

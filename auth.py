@@ -20,6 +20,9 @@ from config import (
 )
 
 PBKDF2_ITERATIONS = 310_000
+MIN_ACCOUNT_PASSWORD_LENGTH = 12
+MIN_USERNAME_LENGTH = 3
+MAX_USERNAME_LENGTH = 100
 
 
 def hash_password(password: str, *, iterations: int = PBKDF2_ITERATIONS) -> str:
@@ -59,7 +62,7 @@ def _get_local_user(username: str) -> dict[str, str] | None:
     with closing(_local_user_connection()) as connection:
         row = connection.execute(
             "SELECT username, password_hash, role FROM local_users "
-            "WHERE username = ?",
+            "WHERE username = ? COLLATE NOCASE",
             (username,),
         ).fetchone()
     return dict(row) if row else None
@@ -92,6 +95,51 @@ def create_initial_admin(username: str, password_hash: str) -> None:
         except sqlite3.IntegrityError as exc:
             connection.rollback()
             raise ValueError("That username is already in use.") from exc
+
+
+def create_candidate_account(username: str, password: str) -> dict[str, str]:
+    """Create a self-service candidate account; public sign-up cannot grant admin."""
+    normalized_username = username.strip() if isinstance(username, str) else ""
+    if not MIN_USERNAME_LENGTH <= len(normalized_username) <= MAX_USERNAME_LENGTH:
+        raise ValueError(
+            f"Username must be between {MIN_USERNAME_LENGTH} and "
+            f"{MAX_USERNAME_LENGTH} characters."
+        )
+    if not isinstance(password, str) or not (
+        MIN_ACCOUNT_PASSWORD_LENGTH <= len(password) <= 1024
+    ):
+        raise ValueError(
+            f"Password must be between {MIN_ACCOUNT_PASSWORD_LENGTH} and 1024 characters."
+        )
+
+    configured_accounts = get_configured_users()
+    configured_names = set(configured_accounts)
+    if ADMIN_PASSWORD_HASH:
+        configured_names.add(ADMIN_USERNAME)
+    if any(name.casefold() == normalized_username.casefold() for name in configured_names):
+        raise ValueError("That username is already registered.")
+
+    password_hash = hash_password(password)
+    with closing(_local_user_connection()) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        existing = connection.execute(
+            "SELECT 1 FROM local_users WHERE username = ? COLLATE NOCASE",
+            (normalized_username,),
+        ).fetchone()
+        if existing:
+            connection.rollback()
+            raise ValueError("That username is already registered.")
+        try:
+            connection.execute(
+                "INSERT INTO local_users(username, password_hash, role, created_at) "
+                "VALUES (?, ?, 'candidate', datetime('now'))",
+                (normalized_username, password_hash),
+            )
+            connection.commit()
+        except sqlite3.IntegrityError as exc:
+            connection.rollback()
+            raise ValueError("That username is already registered.") from exc
+    return {"username": normalized_username, "role": "candidate"}
 
 
 def _verify_password(password: str, encoded_hash: str) -> bool:
@@ -137,7 +185,10 @@ def authenticate(username: str, password: str) -> dict[str, str] | None:
         return None
     if not _verify_password(password, account["password_hash"]):
         return None
-    return {"username": normalized_username, "role": account["role"]}
+    return {
+        "username": account.get("username", normalized_username),
+        "role": account["role"],
+    }
 
 
 def has_configured_admin() -> bool:

@@ -23,6 +23,10 @@ There are no default passwords. On first launch, the app displays a one-time
 form to create the initial administrator. The password must have at least 12
 characters and is stored only as a salted PBKDF2 hash in the application
 database. Once an administrator exists, public first-admin setup is disabled.
+After an administrator has been set up, visitors can use the **Create account**
+tab on the sign-in page to register their own candidate username and password.
+New self-registered accounts receive candidate access only and are signed in
+after successful registration.
 
 For managed deployments, you can instead provide administrator credentials in
 environment variables. Generate a PBKDF2 hash with:
